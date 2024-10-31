@@ -3,6 +3,7 @@
 #include "source/common/common/random_generator.h"
 #include "source/common/config/metadata.h"
 #include "source/common/http/utility.h"
+#include "source/common/json/json_utility.h"
 #include "source/common/runtime/runtime_features.h"
 #include "source/common/stream_info/utility.h"
 
@@ -61,20 +62,11 @@ MetadataFormatter::formatMetadata(const envoy::config::core::v3::Metadata& metad
   }
 
   std::string str;
+  str.reserve(256);
   if (value.kind_case() == ProtobufWkt::Value::kStringValue) {
     str = value.string_value();
   } else {
-#ifdef ENVOY_ENABLE_YAML
-    absl::StatusOr<std::string> json_or_error =
-        MessageUtil::getJsonStringFromMessage(value, false, true);
-    if (json_or_error.ok()) {
-      str = json_or_error.value();
-    } else {
-      str = json_or_error.status().message();
-    }
-#else
-    IS_ENVOY_BUG("Json support compiled out");
-#endif
+    Json::Utility::appendValueToString(value, str);
   }
   SubstitutionFormatUtils::truncate(str, max_length_);
   return str;
@@ -192,7 +184,6 @@ FilterStateFormatter::FilterStateFormatter(absl::string_view key, absl::optional
   if (!field_name.empty()) {
     format_ = FilterStateFormat::Field;
     field_name_ = std::string(field_name);
-    factory_ = Registry::FactoryRegistry<StreamInfo::FilterState::ObjectFactory>::getFactory(key);
   } else if (serialize_as_string) {
     format_ = FilterStateFormat::String;
   } else {
@@ -264,14 +255,7 @@ FilterStateFormatter::format(const StreamInfo::StreamInfo& stream_info) const {
 #endif
   }
   case FilterStateFormat::Field: {
-    if (!factory_) {
-      return absl::nullopt;
-    }
-    const auto reflection = factory_->reflect(state);
-    if (!reflection) {
-      return absl::nullopt;
-    }
-    auto field_value = reflection->getField(field_name_);
+    auto field_value = state->getField(field_name_);
     auto string_value = absl::visit(StringFieldVisitor(), field_value);
     if (!string_value) {
       return absl::nullopt;
@@ -315,14 +299,7 @@ FilterStateFormatter::formatValue(const StreamInfo::StreamInfo& stream_info) con
     return SubstitutionFormatUtils::unspecifiedValue();
   }
   case FilterStateFormat::Field: {
-    if (!factory_) {
-      return SubstitutionFormatUtils::unspecifiedValue();
-    }
-    const auto reflection = factory_->reflect(state);
-    if (!reflection) {
-      return SubstitutionFormatUtils::unspecifiedValue();
-    }
-    auto field_value = reflection->getField(field_name_);
+    auto field_value = state->getField(field_name_);
     auto string_value = absl::visit(StringFieldVisitor(), field_value);
     if (!string_value) {
       return SubstitutionFormatUtils::unspecifiedValue();
@@ -1353,8 +1330,14 @@ const StreamInfoFormatterProviderLookupTable& getKnownStreamInfoFormatterProvide
                   [](const StreamInfo::StreamInfo& stream_info) {
                     absl::optional<std::string> result;
                     if (!stream_info.downstreamAddressProvider().requestedServerName().empty()) {
-                      result = std::string(
-                          stream_info.downstreamAddressProvider().requestedServerName());
+                      if (Runtime::runtimeFeatureEnabled(
+                              "envoy.reloadable_features.sanitize_sni_in_access_log")) {
+                        result = StringUtil::sanitizeInvalidHostname(
+                            stream_info.downstreamAddressProvider().requestedServerName());
+                      } else {
+                        result = std::string(
+                            stream_info.downstreamAddressProvider().requestedServerName());
+                      }
                     }
                     return result;
                   });
@@ -1444,6 +1427,22 @@ const StreamInfoFormatterProviderLookupTable& getKnownStreamInfoFormatterProvide
                     return absl::StrJoin(connection_info.ipSansPeerCertificate(), ",");
                   });
             }}},
+          {"DOWNSTREAM_PEER_EMAIL_SAN",
+           {CommandSyntaxChecker::COMMAND_ONLY,
+            [](absl::string_view, absl::optional<size_t>) {
+              return std::make_unique<StreamInfoSslConnectionInfoFormatterProvider>(
+                  [](const Ssl::ConnectionInfo& connection_info) {
+                    return absl::StrJoin(connection_info.emailSansPeerCertificate(), ",");
+                  });
+            }}},
+          {"DOWNSTREAM_PEER_OTHERNAME_SAN",
+           {CommandSyntaxChecker::COMMAND_ONLY,
+            [](absl::string_view, absl::optional<size_t>) {
+              return std::make_unique<StreamInfoSslConnectionInfoFormatterProvider>(
+                  [](const Ssl::ConnectionInfo& connection_info) {
+                    return absl::StrJoin(connection_info.othernameSansPeerCertificate(), ",");
+                  });
+            }}},
           {"DOWNSTREAM_LOCAL_URI_SAN",
            {CommandSyntaxChecker::COMMAND_ONLY,
             [](absl::string_view, absl::optional<size_t>) {
@@ -1466,6 +1465,22 @@ const StreamInfoFormatterProviderLookupTable& getKnownStreamInfoFormatterProvide
               return std::make_unique<StreamInfoSslConnectionInfoFormatterProvider>(
                   [](const Ssl::ConnectionInfo& connection_info) {
                     return absl::StrJoin(connection_info.ipSansLocalCertificate(), ",");
+                  });
+            }}},
+          {"DOWNSTREAM_LOCAL_EMAIL_SAN",
+           {CommandSyntaxChecker::COMMAND_ONLY,
+            [](absl::string_view, absl::optional<size_t>) {
+              return std::make_unique<StreamInfoSslConnectionInfoFormatterProvider>(
+                  [](const Ssl::ConnectionInfo& connection_info) {
+                    return absl::StrJoin(connection_info.emailSansLocalCertificate(), ",");
+                  });
+            }}},
+          {"DOWNSTREAM_LOCAL_OTHERNAME_SAN",
+           {CommandSyntaxChecker::COMMAND_ONLY,
+            [](absl::string_view, absl::optional<size_t>) {
+              return std::make_unique<StreamInfoSslConnectionInfoFormatterProvider>(
+                  [](const Ssl::ConnectionInfo& connection_info) {
+                    return absl::StrJoin(connection_info.othernameSansLocalCertificate(), ",");
                   });
             }}},
           {"DOWNSTREAM_PEER_SUBJECT",
@@ -1530,6 +1545,30 @@ const StreamInfoFormatterProviderLookupTable& getKnownStreamInfoFormatterProvide
               return std::make_unique<StreamInfoSslConnectionInfoFormatterProvider>(
                   [](const Ssl::ConnectionInfo& connection_info) {
                     return connection_info.serialNumberPeerCertificate();
+                  });
+            }}},
+          {"DOWNSTREAM_PEER_CHAIN_FINGERPRINTS_256",
+           {CommandSyntaxChecker::COMMAND_ONLY,
+            [](const absl::string_view, absl::optional<size_t>) {
+              return std::make_unique<StreamInfoSslConnectionInfoFormatterProvider>(
+                  [](const Ssl::ConnectionInfo& connection_info) {
+                    return absl::StrJoin(connection_info.sha256PeerCertificateChainDigests(), ",");
+                  });
+            }}},
+          {"DOWNSTREAM_PEER_CHAIN_FINGERPRINTS_1",
+           {CommandSyntaxChecker::COMMAND_ONLY,
+            [](const absl::string_view, absl::optional<size_t>) {
+              return std::make_unique<StreamInfoSslConnectionInfoFormatterProvider>(
+                  [](const Ssl::ConnectionInfo& connection_info) {
+                    return absl::StrJoin(connection_info.sha1PeerCertificateChainDigests(), ",");
+                  });
+            }}},
+          {"DOWNSTREAM_PEER_CHAIN_SERIALS",
+           {CommandSyntaxChecker::COMMAND_ONLY,
+            [](const absl::string_view, absl::optional<size_t>) {
+              return std::make_unique<StreamInfoSslConnectionInfoFormatterProvider>(
+                  [](const Ssl::ConnectionInfo& connection_info) {
+                    return absl::StrJoin(connection_info.serialNumbersPeerCertificates(), ",");
                   });
             }}},
           {"DOWNSTREAM_PEER_ISSUER",

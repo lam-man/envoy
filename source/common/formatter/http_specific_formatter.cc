@@ -205,11 +205,8 @@ GrpcStatusFormatter::GrpcStatusFormatter(const std::string& main_header,
 absl::optional<std::string>
 GrpcStatusFormatter::formatWithContext(const HttpFormatterContext& context,
                                        const StreamInfo::StreamInfo& info) const {
-  if (Runtime::runtimeFeatureEnabled(
-          "envoy.reloadable_features.validate_grpc_header_before_log_grpc_status")) {
-    if (!Grpc::Common::isGrpcRequestHeaders(context.requestHeaders())) {
-      return absl::nullopt;
-    }
+  if (!Grpc::Common::isGrpcRequestHeaders(context.requestHeaders())) {
+    return absl::nullopt;
   }
   const auto grpc_status = Grpc::Common::getGrpcStatus(context.responseTrailers(),
                                                        context.responseHeaders(), info, true);
@@ -242,11 +239,8 @@ GrpcStatusFormatter::formatWithContext(const HttpFormatterContext& context,
 ProtobufWkt::Value
 GrpcStatusFormatter::formatValueWithContext(const HttpFormatterContext& context,
                                             const StreamInfo::StreamInfo& info) const {
-  if (Runtime::runtimeFeatureEnabled(
-          "envoy.reloadable_features.validate_grpc_header_before_log_grpc_status")) {
-    if (!Grpc::Common::isGrpcRequestHeaders(context.requestHeaders())) {
-      return SubstitutionFormatUtils::unspecifiedValue();
-    }
+  if (!Grpc::Common::isGrpcRequestHeaders(context.requestHeaders())) {
+    return SubstitutionFormatUtils::unspecifiedValue();
   }
   const auto grpc_status = Grpc::Common::getGrpcStatus(context.responseTrailers(),
                                                        context.responseHeaders(), info, true);
@@ -300,7 +294,7 @@ BuiltInHttpCommandParser::getKnownFormatters() {
         {CommandSyntaxChecker::PARAMS_REQUIRED | CommandSyntaxChecker::LENGTH_ALLOWED,
          [](absl::string_view format, absl::optional<size_t> max_length) {
            auto result = SubstitutionFormatUtils::parseSubcommandHeaders(format);
-           THROW_IF_STATUS_NOT_OK(result, throw);
+           THROW_IF_NOT_OK_REF(result.status());
            return std::make_unique<RequestHeaderFormatter>(result.value().first,
                                                            result.value().second, max_length);
          }}},
@@ -308,7 +302,7 @@ BuiltInHttpCommandParser::getKnownFormatters() {
         {CommandSyntaxChecker::PARAMS_REQUIRED | CommandSyntaxChecker::LENGTH_ALLOWED,
          [](absl::string_view format, absl::optional<size_t> max_length) {
            auto result = SubstitutionFormatUtils::parseSubcommandHeaders(format);
-           THROW_IF_STATUS_NOT_OK(result, throw);
+           THROW_IF_NOT_OK_REF(result.status());
            return std::make_unique<ResponseHeaderFormatter>(result.value().first,
                                                             result.value().second, max_length);
          }}},
@@ -316,7 +310,7 @@ BuiltInHttpCommandParser::getKnownFormatters() {
         {CommandSyntaxChecker::PARAMS_REQUIRED | CommandSyntaxChecker::LENGTH_ALLOWED,
          [](absl::string_view format, absl::optional<size_t> max_length) {
            auto result = SubstitutionFormatUtils::parseSubcommandHeaders(format);
-           THROW_IF_STATUS_NOT_OK(result, throw);
+           THROW_IF_NOT_OK_REF(result.status());
            return std::make_unique<ResponseTrailerFormatter>(result.value().first,
                                                              result.value().second, max_length);
          }}},
@@ -364,7 +358,7 @@ BuiltInHttpCommandParser::getKnownFormatters() {
         {CommandSyntaxChecker::PARAMS_REQUIRED | CommandSyntaxChecker::LENGTH_ALLOWED,
          [](absl::string_view format, absl::optional<size_t> max_length) {
            auto result = SubstitutionFormatUtils::parseSubcommandHeaders(format);
-           THROW_IF_STATUS_NOT_OK(result, throw);
+           THROW_IF_NOT_OK_REF(result.status());
            return std::make_unique<RequestHeaderFormatter>(result.value().first,
                                                            result.value().second, max_length);
          }}},

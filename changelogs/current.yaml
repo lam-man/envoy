@@ -2,162 +2,125 @@ date: Pending
 
 behavior_changes:
 # *Changes that are expected to cause an incompatibility if applicable; deployment changes are likely required*
-- area: tracing
+- area: wasm
   change: |
-    Removed support for (long deprecated) opentracing.  See `issue 27401
-    <https://github.com/envoyproxy/envoy/issues/27401>`_ for details.
-- area: stats scoped_rds
+    The route cache will not be cleared by default if the wasm extension modified the request headers and
+    the ABI version of wasm extension is larger then 0.2.1.
+- area: wasm
   change: |
-    Added new tag extraction so that scoped rds stats have their :ref:'scope_route_config_name
-    <envoy_v3_api_msg_config/route/v3/scoped_route>' and stat prefix extracted.
+    Remove previously deprecated xDS attributes from ``get_property``, use ``xds`` attributes instead.
 
 minor_behavior_changes:
 # *Changes that may cause incompatibilities for some users, but should not for most*
-- area: command line options
+- area: access_log
   change: |
-    :option:`--enable-fine-grain-logging` and :option:`--component-log-level` were incompatible in that one
-    would make the other ineffective. Setting both options at once is now an error, to reduce potential confusion.
-- area: tcp
+    New implementation of the JSON formatter will be enabled by default.
+    The :ref:`sort_properties <envoy_v3_api_field_config.core.v3.JsonFormatOptions.sort_properties>` field will
+    be ignored in the new implementation because the new implementation always sorts properties. And the new implementation
+    will always keep the value type in the JSON output. For example, the duration field will always be rendered as a number
+    instead of a string.
+    This behavior change could be disabled temporarily by setting the runtime
+    ``envoy.reloadable_features.logging_with_fast_json_formatter`` to false.
+- area: formatter
   change: |
-    Added support for :ref:`connection_pool_per_downstream_connection
-    <envoy_v3_api_field_config.cluster.v3.Cluster.connection_pool_per_downstream_connection>` flag in tcp connection pool.
-- area: http3
+    The NaN and Infinity values of float will be serialized to ``null`` and ``"inf"`` respectively in the
+    metadata (``DYNAMIC_METADATA``, ``CLUSTER_METADATA``, etc.) formatter.
+- area: http
   change: |
-    The ACCEPT_UNTRUSTED option now works more consistently for HTTP/3 requests. This change is
-    guarded by ``envoy.reloadable_features.extend_h3_accept_untrusted``.
-- area: http3
+    If the :ref:`pack_trace_reason <envoy_v3_api_field_extensions.request_id.uuid.v3.UuidRequestIdConfig.pack_trace_reason>`
+    is set to false, Envoy will not parse the trace reason from the ``x-request-id`` header to ensure reads and writes of
+    trace reason be consistant.
+    If the :ref:`pack_trace_reason <envoy_v3_api_field_extensions.request_id.uuid.v3.UuidRequestIdConfig.pack_trace_reason>`
+    is set to true and external ``x-request-id`` value is used, the trace reason in the external request id will not
+    be trusted and will be cleared.
+- area: oauth2
   change: |
-    HTTP/3 alt-svc headers will now be respected from IP-address-based hostnames. This change is
-    guarded by runtime guard ``envoy.reloadable_features.allow_alt_svc_for_ips``.
-- area: lua
+    :ref:`use_refresh_token <envoy_v3_api_field_extensions.filters.http.oauth2.v3.OAuth2Config.use_refresh_token>`
+    is now enabled by default. This behavioral change can be temporarily reverted by setting runtime guard
+    ``envoy.reloadable_features.oauth2_use_refresh_token`` to false.
+- area: quic
   change: |
-    When Lua script executes httpCall, backpressure is exercised when receiving body from downstream client. This behavior can be reverted
-    by setting the runtime guard ``envoy.reloadable_features.lua_flow_control_while_http_call`` to false.
+    Enable UDP GRO in QUIC client connections by default. This behavior can be reverted by setting
+    the runtime guard ``envoy.reloadable_features.prefer_quic_client_udp_gro`` to false.
 
 bug_fixes:
 # *Changes expected to improve the state of the world and are unlikely to have negative effects*
-- area: dns
+- area: tls
   change: |
-    The DNS filter no longer returns FORMERR if a message has an ID of 0.
-- area: quic
+    Support operations on IP SANs when the IP version is not supported by the host operating system, for example
+    an IPv6 SAN can now be used on a host not supporting IPv6 addresses.
+- area: scoped_rds
   change: |
-    Fixes access log formatter %CONNECTION_ID% for QUIC connections.
-- area: c-ares
-  change: |
-    Applying a C-ares patch to fix DNS resoultion by the Google gRPC library.
-- area: ext_authz
-  change: |
-    Fixed fail-open behavior of the :ref:`failure_mode_allow config option
-    <envoy_v3_api_field_extensions.filters.http.ext_authz.v3.ExtAuthz.failure_mode_allow>`
-    when a grpc external authz server is used.
-    The behavior can be enabled by ``envoy_reloadable_features_process_ext_authz_grpc_error_codes_as_errors``.
-- area: websocket
-  change: |
-    Fixed a bug where the websocket upgrade filter would not take into account per-filter configs.
-- area: ext_proc
-  change: |
-    Add runtime guard for timeout error code 504 Gateway Timeout that is returned to downstream. If runtime flag
-    ``envoy.reloadable_features.ext_proc_timeout_error`` is set to false, old error code 500 Internal Server Error will be returned.
+    Fixes scope key leak and spurious scope key conflicts when an update to an SRDS resource changes the key.
 
 removed_config_or_runtime:
 # *Normally occurs at the end of the* :ref:`deprecation period <deprecated>`
-- area: upstream
+- area: router
   change: |
-    Removed runtime flag ``envoy.reloadable_features.avoid_zombie_streams`` and legacy code paths.
-- area: ext_proc
+    Removed runtime guard ``envoy_reloadable_features_send_local_reply_when_no_buffer_and_upstream_request``.
+- area: load balancing
   change: |
-    Removed runtime flag ``envoy_reloadable_features_immediate_response_use_filter_mutation_rule`` and legacy code
-    path.
-- area: ext_proc
+    Removed runtime guard ``envoy.reloadable_features.edf_lb_host_scheduler_init_fix`` and legacy code paths.
+- area: load balancing
   change: |
-    Removed runtime flag ``envoy_reloadable_features_send_header_raw_value`` and legacy code path.
+    Removed runtime guard ``envoy.reloadable_features.edf_lb_locality_scheduler_init_fix`` and legacy code paths.
+- area: grpc
+  change: |
+    Removed runtime guard ``envoy.reloadable_features.validate_grpc_header_before_log_grpc_status``.
 - area: http
   change: |
-    Removed runtime flag ``envoy.reloadable_features.no_downgrade_to_canonical_name`` and legacy code
-    path.
-- area: DNS
+    Removed runtime flag ``envoy.reloadable_features.http_route_connect_proxy_by_default`` and legacy code paths.
+- area: http2
   change: |
-    Removed ``envoy.reloadable_features.dns_cache_set_first_resolve_complete`` runtime flag and legacy code paths.
-- area: tls
-  change: |
-    Removed runtime flag ``envoy.reloadable_features.ssl_transport_failure_reason_format``.
-- area: http
-  change: |
-    Removed runtime flag ``envoy.reloadable_features.abort_filter_chain_on_stream_reset`` and legacy
-    code path.
-- area: grpc reverse bridge
-  change: |
-    Removed ``envoy.reloadable_features.grpc_http1_reverse_bridge_handle_empty_response`` runtime
-    flag and legacy code paths.
-- area: grpc reverse bridge
-  change: |
-    Removed ``envoy.reloadable_features.grpc_http1_reverse_bridge_change_http_status`` runtime flag
-    and legacy code paths.
-- area: stateful_session
-  change: |
-    Removed ``envoy.reloadable_features.stateful_session_encode_ttl_in_cookie`` runtime flag and legacy code paths.
-- area: quic
-  change: |
-    Removed ``envoy.reloadable_features.quic_fix_filter_manager_uaf`` runtime flag and legacy code paths.
-- area: udp
-  change: |
-    Removed ``envoy.restart_features.udp_read_normalize_addresses`` runtime flag and legacy code paths.
-- area: upstream
-  change: |
-    Removed runtime flag ``envoy.reloadable_features.upstream_allow_connect_with_2xx`` and legacy code paths.
-- area: upstream flow control
-  change: |
-    Removed ``envoy.reloadable_features.upstream_wait_for_response_headers_before_disabling_read`` runtime flag
-    and legacy code paths.
-- area: dynamic forward proxy
-  change: |
-    Removed ``envoy.reloadable_features.normalize_host_for_preresolve_dfp_dns`` runtime flag and legacy code paths.
-
-new_features:
-- area: tls
-  change: |
-    Added :ref:`prefer_client_ciphers
-    <envoy_v3_api_field_extensions.transport_sockets.tls.v3.DownstreamTlsContext.prefer_client_ciphers>`
-    to support enabling client cipher preference instead of server's for TLS handshakes.
-- area: ext_authz
-  change: |
-    Added config field
-    :ref:`filter_metadata <envoy_v3_api_field_extensions.filters.http.ext_authz.v3.ExtAuthz.filter_metadata>`
-    for injecting arbitrary data to the filter state for logging.
-- area: access_log
-  change: |
-    added %UPSTREAM_CLUSTER_RAW% access log formatter to log the original upstream cluster name, regardless of whether
-    ``alt_stat_name`` is set.
-- area: formatter
-  change: |
-    Added full feature absl::FormatTime() support to the DateFormatter. This allows the timepoint formatters (like
-    ``%START_TIME%``) to use ``%E#S``, ``%E*S``, ``%E#f`` and ``%E*f`` to format the subsecond part of the timepoint.
-- area: sockets
-  change: |
-    Added socket ``type`` field for specifying a socket type to apply the socket option to under :ref:`SocketOption
-    <envoy_v3_api_msg_config.core.v3.SocketOption>`. If not specified, the socket option will be applied to all socket
-    types.
-- area: tls
-  change: |
-    Added an extension point :ref:`custom_tls_certificate_selector
-    <envoy_v3_api_field_extensions.transport_sockets.tls.v3.CommonTlsContext.custom_tls_certificate_selector>`
-    to allow overriding TLS certificate selection behavior.
-    An extension can select certificate base on the incoming SNI, in both sync and async mode.
-- area: matching
-  change: |
-    Added dynamic metadata matcher support :ref:`Dynamic metadata input <extension_envoy.matching.inputs.dynamic_metadata>`
-    and :ref:`Dynamic metadata input matcher <extension_envoy.matching.matchers.metadata_matcher>`.
-- area: ratelimit
-  change: |
-    Added the ability to modify :ref:`hits_addend <envoy_v3_api_field_service.ratelimit.v3.RateLimitRequest.hits_addend>`
-    by setting by setting filter state value ``envoy.ratelimit.hits_addend`` to the desired value.
-- area: access_log
-  change: |
-    Added new access log command operators ``%START_TIME_LOCAL%`` and ``%EMIT_TIME_LOCAL%``,
-    similar to  ``%START_TIME%`` and ``%EMIT_TIME%``, but use local time zone.
+    Removed runtime flag ``envoy.reloadable_features.defer_processing_backedup_streams`` and legacy code paths.
 - area: dns
   change: |
-    Prefer using IPv6 address when addresses from both families are available.
-    Can be reverted by setting ``envoy.reloadable_features.prefer_ipv6_dns_on_macos`` to false.
+    Removed runtime flag ``envoy.reloadable_features.dns_reresolve_on_eai_again`` and legacy code paths.
+- area: quic
+  change: |
+    Removed runtime flag ``envoy.restart_features.quic_handle_certs_with_shared_tls_code`` and legacy code paths.
+- area: upstream
+  change: |
+    Removed runtime flag ``envoy.restart_features.allow_client_socket_creation_failure`` and legacy code paths.
+
+new_features:
+- area: wasm
+  change: |
+    Added the wasm vm reload support to reload wasm vm when the wasm vm is failed with runtime errors. See
+    :ref:`failure_policy <envoy_v3_api_field_extensions.wasm.v3.PluginConfig.failure_policy>` for more details.
+    The ``FAIL_RELOAD`` reload policy will be used by default.
+- area: aws_request_signing
+  change: |
+    Added an optional field :ref:`credential_provider
+    <envoy_v3_api_field_extensions.filters.http.aws_request_signing.v3.AwsRequestSigning.credential_provider>`
+    to the AWS request signing filter to explicitly specify a source for AWS credentials.
+- area: tls
+  change: |
+    Added support for P-384 and P-521 curves for TLS server certificates.
+- area: wasm
+  change: |
+    added ``clear_route_cache`` foreign function to clear the route cache.
+- area: access_log
+  change: |
+    Added %DOWNSTREAM_LOCAL_EMAIL_SAN%, %DOWNSTREAM_PEER_EMAIL_SAN%, %DOWNSTREAM_LOCAL_OTHERNAME_SAN% and
+    %DOWNSTREAM_PEER_OTHERNAME_SAN% substitution formatters.
+- area: quic
+  change: |
+    Added :ref:`QUIC stats debug visitor <envoy_v3_api_msg_extensions.quic.connection_debug_visitor.quic_stats.v3.Config>` to
+    get more stats from the QUIC transport.
+- area: http_inspector
+  change: |
+    Added default-false ``envoy.reloadable_features.http_inspector_use_balsa_parser`` for HttpInspector to use BalsaParser.
+- area: overload
+  change: |
+    Added support for scaling :ref:`max connection duration
+    <envoy_v3_api_enum_value_config.overload.v3.ScaleTimersOverloadActionConfig.TimerType.HTTP_DOWNSTREAM_CONNECTION_MAX>`.
+    This can be used to reduce the max connection duration in response to overload.
+- area: tracers
+  change: |
+    Set resource ``telemetry.sdk.*`` and scope ``otel.scope.name|version`` attributes for the OpenTelemetry tracer.
+- area: lua
+  change: |
+    Added ssl :ref:`parsedSubjectPeerCertificate() <config_http_filters_lua_parsed_name>` API.
 
 deprecated:

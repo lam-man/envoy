@@ -7,9 +7,14 @@
 
 #include "envoy/common/exception.h"
 
+#include "source/extensions/dynamic_modules/abi.h"
+#include "source/extensions/dynamic_modules/abi_version.h"
+
 namespace Envoy {
 namespace Extensions {
 namespace DynamicModules {
+
+constexpr char DYNAMIC_MODULES_SEARCH_PATH[] = "ENVOY_DYNAMIC_MODULES_SEARCH_PATH";
 
 absl::StatusOr<DynamicModuleSharedPtr> newDynamicModule(const absl::string_view object_file_path,
                                                         const bool do_not_close) {
@@ -27,7 +32,42 @@ absl::StatusOr<DynamicModuleSharedPtr> newDynamicModule(const absl::string_view 
     return absl::InvalidArgumentError(
         absl::StrCat("Failed to load dynamic module: ", object_file_path, " : ", dlerror()));
   }
-  return std::make_shared<DynamicModule>(handle);
+
+  DynamicModuleSharedPtr dynamic_module = std::make_shared<DynamicModule>(handle);
+
+  const auto init_function =
+      dynamic_module->getFunctionPointer<decltype(&envoy_dynamic_module_on_program_init)>(
+          "envoy_dynamic_module_on_program_init");
+
+  if (init_function == nullptr) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("Failed to resolve envoy_dynamic_module_on_program_init: ", dlerror()));
+  }
+
+  const char* abi_version = (*init_function)();
+  if (abi_version == nullptr) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("Failed to initialize dynamic module: ", object_file_path));
+  }
+  // Checks the kAbiVersion and the version of the dynamic module.
+  if (absl::string_view(abi_version) != absl::string_view(kAbiVersion)) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("ABI version mismatch: got ", abi_version, ", but expected ", kAbiVersion));
+  }
+  return dynamic_module;
+}
+
+absl::StatusOr<DynamicModuleSharedPtr> newDynamicModuleByName(const absl::string_view module_name,
+                                                              const bool do_not_close) {
+  const char* module_search_path = getenv(DYNAMIC_MODULES_SEARCH_PATH);
+  if (module_search_path == nullptr) {
+    return absl::InvalidArgumentError(absl::StrCat("Failed to load dynamic module: ", module_name,
+                                                   " : ", DYNAMIC_MODULES_SEARCH_PATH,
+                                                   " is not set"));
+  }
+  const std::filesystem::path file_path_absolute = std::filesystem::absolute(
+      fmt::format("{}/lib{}.so", std::string(module_search_path), std::string(module_name)));
+  return newDynamicModule(file_path_absolute.string(), do_not_close);
 }
 
 DynamicModule::~DynamicModule() { dlclose(handle_); }

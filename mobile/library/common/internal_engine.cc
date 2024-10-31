@@ -10,6 +10,7 @@
 #include "source/common/runtime/runtime_features.h"
 
 #include "absl/synchronization/notification.h"
+#include "library/common/network/proxy_api.h"
 #include "library/common/stats/utility.h"
 
 namespace Envoy {
@@ -34,11 +35,6 @@ InternalEngine::InternalEngine(std::unique_ptr<EngineCallbacks> callbacks,
   ExtensionRegistry::registerFactories();
 
   Api::External::registerApi(std::string(ENVOY_EVENT_TRACKER_API_NAME), &event_tracker_);
-  // Envoy Mobile always requires dfp_mixed_scheme for the TLS and cleartext DFP clusters.
-  // While dfp_mixed_scheme defaults to true, some environments force it to false (e.g. within
-  // Google), so we force it back to true in Envoy Mobile.
-  // TODO(abeyad): Remove once this is no longer needed.
-  Runtime::maybeSetRuntimeGuard("envoy.reloadable_features.dfp_mixed_scheme", true);
 }
 
 InternalEngine::InternalEngine(std::unique_ptr<EngineCallbacks> callbacks,
@@ -95,20 +91,10 @@ envoy_status_t InternalEngine::cancelStream(envoy_stream_t stream) {
 // copy-constructible type, so it's not possible to move capture `std::unique_ptr` with
 // `std::function`.
 envoy_status_t InternalEngine::run(std::shared_ptr<Envoy::OptionsImplBase> options) {
-  main_thread_ = thread_factory_->createThread(
-      [this, options]() mutable -> void {
-        if (thread_priority_) {
-          // Set the thread priority before invoking the thread routine.
-          const int rc = setpriority(PRIO_PROCESS, thread_factory_->currentThreadId().getId(),
-                                     *thread_priority_);
-          if (rc != 0) {
-            ENVOY_LOG(debug, "failed to set thread priority: {}", Envoy::errorDetails(errno));
-          }
-        }
-
-        main(options);
-      },
-      /* options= */ absl::nullopt, /* crash_on_failure= */ false);
+  Thread::Options thread_options;
+  thread_options.priority_ = thread_priority_;
+  main_thread_ = thread_factory_->createThread([this, options]() mutable -> void { main(options); },
+                                               thread_options, /* crash_on_failure= */ false);
   return (main_thread_ != nullptr) ? ENVOY_SUCCESS : ENVOY_FAILURE;
 }
 
@@ -145,6 +131,14 @@ envoy_status_t InternalEngine::main(std::shared_ptr<Envoy::OptionsImplBase> opti
       main_common = std::make_unique<EngineCommon>(options);
       server_ = main_common->server();
       event_dispatcher_ = &server_->dispatcher();
+
+      // If proxy resolution APIs are configured on the Engine, set the main thread's dispatcher
+      // on the proxy resolver for handling callbacks.
+      auto* proxy_resolver = static_cast<Network::ProxyResolverApi*>(
+          Api::External::retrieveApi("envoy_proxy_resolver", /*allow_absent=*/true));
+      if (proxy_resolver != nullptr) {
+        proxy_resolver->resolver->setDispatcher(event_dispatcher_);
+      }
 
       cv_.notifyAll();
     }
@@ -281,10 +275,14 @@ envoy_status_t InternalEngine::resetConnectivityState() {
   return dispatcher_->post([&]() -> void { connectivity_manager_->resetConnectivityState(); });
 }
 
-envoy_status_t InternalEngine::setPreferredNetwork(NetworkType network) {
-  return dispatcher_->post([&, network]() -> void {
-    envoy_netconf_t configuration_key =
-        Network::ConnectivityManagerImpl::setPreferredNetwork(network);
+void InternalEngine::onDefaultNetworkAvailable() {
+  ENVOY_LOG_MISC(trace, "Calling the default network available callback");
+}
+
+void InternalEngine::onDefaultNetworkChanged(NetworkType network) {
+  ENVOY_LOG_MISC(trace, "Calling the default network changed callback");
+  dispatcher_->post([&, network]() -> void {
+    envoy_netconf_t configuration = Network::ConnectivityManagerImpl::setPreferredNetwork(network);
     if (Runtime::runtimeFeatureEnabled(
             "envoy.reloadable_features.dns_cache_set_ip_version_to_remove")) {
       // The IP version to remove flag must be set first before refreshing the DNS cache so that
@@ -305,8 +303,13 @@ envoy_status_t InternalEngine::setPreferredNetwork(NetworkType network) {
           [](Http::HttpServerPropertiesCache& cache) { cache.resetBrokenness(); };
       cache_manager.forEachThreadLocalCache(clear_brokenness);
     }
-    connectivity_manager_->refreshDns(configuration_key, true);
+    connectivity_manager_->refreshDns(configuration, true);
   });
+}
+
+void InternalEngine::onDefaultNetworkUnavailable() {
+  ENVOY_LOG_MISC(trace, "Calling the default network unavailable callback");
+  dispatcher_->post([&]() -> void { connectivity_manager_->dnsCache()->stop(); });
 }
 
 envoy_status_t InternalEngine::recordCounterInc(absl::string_view elements, envoy_stats_tags tags,
@@ -321,7 +324,9 @@ envoy_status_t InternalEngine::recordCounterInc(absl::string_view elements, envo
       });
 }
 
-Event::ProvisionalDispatcher& InternalEngine::dispatcher() { return *dispatcher_; }
+Event::ProvisionalDispatcher& InternalEngine::dispatcher() const { return *dispatcher_; }
+
+Thread::PosixThreadFactory& InternalEngine::threadFactory() const { return *thread_factory_; }
 
 void statsAsText(const std::map<std::string, uint64_t>& all_stats,
                  const std::vector<Stats::ParentHistogramSharedPtr>& histograms,

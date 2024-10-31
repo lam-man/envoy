@@ -14,27 +14,35 @@ ExternalProcessorClientImpl::ExternalProcessorClientImpl(Grpc::AsyncClientManage
 ExternalProcessorStreamPtr ExternalProcessorClientImpl::start(
     ExternalProcessorCallbacks& callbacks,
     const Grpc::GrpcServiceConfigWithHashKey& config_with_hash_key,
-    const Http::AsyncClient::StreamOptions& options,
+    Http::AsyncClient::StreamOptions& options,
     Http::StreamFilterSidestreamWatermarkCallbacks& sidestream_watermark_callbacks) {
   auto client_or_error =
       client_manager_.getOrCreateRawAsyncClientWithHashKey(config_with_hash_key, scope_, true);
-  THROW_IF_STATUS_NOT_OK(client_or_error, throw);
+  THROW_IF_NOT_OK_REF(client_or_error.status());
   Grpc::AsyncClient<ProcessingRequest, ProcessingResponse> grpcClient(client_or_error.value());
   return ExternalProcessorStreamImpl::create(std::move(grpcClient), callbacks, options,
                                              sidestream_watermark_callbacks);
 }
 
+void ExternalProcessorClientImpl::sendRequest(
+    envoy::service::ext_proc::v3::ProcessingRequest&& request, bool end_stream, const uint64_t,
+    RequestCallbacks*, StreamBase* stream) {
+  ExternalProcessorStream* grpc_stream = dynamic_cast<ExternalProcessorStream*>(stream);
+  grpc_stream->send(std::move(request), end_stream);
+}
+
 ExternalProcessorStreamPtr ExternalProcessorStreamImpl::create(
     Grpc::AsyncClient<ProcessingRequest, ProcessingResponse>&& client,
-    ExternalProcessorCallbacks& callbacks, const Http::AsyncClient::StreamOptions& options,
+    ExternalProcessorCallbacks& callbacks, Http::AsyncClient::StreamOptions& options,
     Http::StreamFilterSidestreamWatermarkCallbacks& sidestream_watermark_callbacks) {
   auto stream =
       std::unique_ptr<ExternalProcessorStreamImpl>(new ExternalProcessorStreamImpl(callbacks));
 
+  if (stream->grpcSidestreamFlowControl()) {
+    options.setSidestreamWatermarkCallbacks(&sidestream_watermark_callbacks);
+  }
+
   if (stream->startStream(std::move(client), options)) {
-    if (stream->grpcSidestreamFlowControl()) {
-      stream->stream_->setWatermarkCallbacks(sidestream_watermark_callbacks);
-    }
     return stream;
   }
   // Return nullptr on the start failure.

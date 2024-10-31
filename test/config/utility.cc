@@ -1320,8 +1320,7 @@ void ConfigHelper::addSslConfig(const ServerSslOptions& options) {
   filter_chain->mutable_transport_socket()->mutable_typed_config()->PackFrom(tls_context);
 }
 
-void ConfigHelper::addQuicDownstreamTransportSocketConfig(
-    bool enable_early_data, std::vector<absl::string_view> custom_alpns) {
+void ConfigHelper::addQuicDownstreamTransportSocketConfig() {
   for (auto& listener : *bootstrap_.mutable_static_resources()->mutable_listeners()) {
     if (listener.udp_listener_config().has_quic_options()) {
       // Disable SO_REUSEPORT, because it undesirably allows parallel test jobs to use the same
@@ -1334,11 +1333,8 @@ void ConfigHelper::addQuicDownstreamTransportSocketConfig(
       [&](envoy::extensions::transport_sockets::tls::v3::CommonTlsContext& common_tls_context) {
         initializeTls(ServerSslOptions().setRsaCert(true).setTlsV13(true), common_tls_context,
                       true);
-        for (absl::string_view alpn : custom_alpns) {
-          common_tls_context.add_alpn_protocols(alpn);
-        }
       },
-      enable_early_data);
+      true);
 }
 
 bool ConfigHelper::setAccessLog(
@@ -1523,13 +1519,13 @@ void ConfigHelper::initializeTls(
   }
   if (options.ecdsa_cert_) {
     auto* tls_certificate = common_tls_context.add_tls_certificates();
-    tls_certificate->mutable_certificate_chain()->set_filename(
-        TestEnvironment::runfilesPath("test/config/integration/certs/server_ecdsacert.pem"));
-    tls_certificate->mutable_private_key()->set_filename(
-        TestEnvironment::runfilesPath("test/config/integration/certs/server_ecdsakey.pem"));
+    tls_certificate->mutable_certificate_chain()->set_filename(TestEnvironment::runfilesPath(
+        "test/config/integration/certs/" + options.ecdsa_cert_name_ + "cert.pem"));
+    tls_certificate->mutable_private_key()->set_filename(TestEnvironment::runfilesPath(
+        "test/config/integration/certs/" + options.ecdsa_cert_name_ + "key.pem"));
     if (options.ecdsa_cert_ocsp_staple_) {
       tls_certificate->mutable_ocsp_staple()->set_filename(TestEnvironment::runfilesPath(
-          "test/config/integration/certs/server_ecdsa_ocsp_resp.der"));
+          "test/config/integration/certs/" + options.ecdsa_cert_name_ + "_ocsp_resp.der"));
     }
   }
 
@@ -1570,6 +1566,21 @@ envoy::config::listener::v3::Filter* ConfigHelper::getFilterFromListener(const s
   for (ssize_t i = 0; i < filter_chain->filters_size(); i++) {
     if (filter_chain->mutable_filters(i)->name() == name) {
       return filter_chain->mutable_filters(i);
+    }
+  }
+  return nullptr;
+}
+
+envoy::config::listener::v3::ListenerFilter*
+ConfigHelper::getListenerFilterFromListener(const std::string& name) {
+  RELEASE_ASSERT(!finalized_, "");
+  if (bootstrap_.mutable_static_resources()->listeners_size() == 0) {
+    return nullptr;
+  }
+  auto* listener = bootstrap_.mutable_static_resources()->mutable_listeners(0);
+  for (ssize_t i = 0; i < listener->listener_filters_size(); i++) {
+    if (listener->mutable_listener_filters(i)->name() == name) {
+      return listener->mutable_listener_filters(i);
     }
   }
   return nullptr;
@@ -1639,6 +1650,14 @@ void ConfigHelper::storeHttpConnectionManager(
       "http", hcm);
 }
 
+bool ConfigHelper::loadUdpProxyFilter(UdpProxyConfig& udp_proxy) {
+  return loadListenerFilter<UdpProxyConfig>("udp_proxy", udp_proxy);
+}
+
+void ConfigHelper::storeUdpProxyFilter(const UdpProxyConfig& udp_proxy) {
+  return storeListenerFilter<UdpProxyConfig>("udp_proxy", udp_proxy);
+}
+
 void ConfigHelper::addConfigModifier(ConfigModifierFunction function) {
   RELEASE_ASSERT(!finalized_, "");
   config_modifiers_.push_back(std::move(function));
@@ -1653,6 +1672,17 @@ void ConfigHelper::addConfigModifier(HttpModifierFunction function) {
     }
     function(hcm_config);
     storeHttpConnectionManager(hcm_config);
+  });
+}
+
+void ConfigHelper::addConfigModifier(UdpProxyModifierFunction function) {
+  addConfigModifier([function, this](envoy::config::bootstrap::v3::Bootstrap&) -> void {
+    UdpProxyConfig udp_proxy_config;
+    if (!loadUdpProxyFilter(udp_proxy_config)) {
+      return;
+    }
+    function(udp_proxy_config);
+    storeUdpProxyFilter(udp_proxy_config);
   });
 }
 
